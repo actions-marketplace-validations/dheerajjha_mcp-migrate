@@ -128,6 +128,14 @@ registered as `owner: dheerajjha, repo: mcp-migrate, workflow: release.yml,
 environment: pypi` — all four must keep matching or the upload is rejected, so
 renaming that workflow file is a breaking change.
 
+**Ahead is necessary, not sufficient.** Before tagging, confirm CI is green on
+`main` *for the commit you are about to tag* — `gh run list --branch main
+--limit 1` will happily report `in_progress` with an empty conclusion, and an
+empty conclusion is not a pass. The sibling repo was one commit ahead and red
+on 2026-09-17; applying "release when ahead" literally would have published a
+red tree over OIDC, which needs no human at the keyboard to stop it. Docs-only
+and test-only commits are not a reason to publish at all.
+
 The release is: changelog, version bump, PR, merge, tag, push tag. Then verify
 by installing from PyPI fresh — not by reading the green tick.
 
