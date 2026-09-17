@@ -17,7 +17,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from ._textedit import strip_import_members
+from ._textedit import sole_function_body_lines, strip_import_members
 from .base import Fixer, FixResult, comment_prefix, is_commented
 
 SPEC_URL = "https://modelcontextprotocol.io/specification/2026-07-28/changelog"
@@ -81,6 +81,9 @@ class InitializeHandshakeFixer(Fixer):
         # Remove import members from a parenthesised list rather than
         # commenting them out, so `from x import ( )` is never produced (#245).
         lines, changes = strip_import_members(lines, _handshake_hit, todo, "initialize handshake")
+        # A body's only statement cannot be commented out without emptying
+        # the block; those lines get a `pass` under them (#245).
+        sole_body = sole_function_body_lines(lines, path)
 
         for i, raw_line in enumerate(lines, start=1):
             stripped = raw_line.lstrip(" \t")
@@ -102,7 +105,12 @@ class InitializeHandshakeFixer(Fixer):
                     out.append(f"{indent}{todo}{newline}")
                     todo_added = True
                 if _safe_to_comment_out(raw_line):
-                    out.append(f"{indent}{prefix}{body}{newline}")
+                    if i in sole_body:
+                        # #245: the body's only statement. The comment gives
+                        # up its line ending so `pass` starts a line of its own.
+                        out.append(f"{indent}{prefix}{body}\n{indent}pass{newline}")
+                    else:
+                        out.append(f"{indent}{prefix}{body}{newline}")
                     changes.append(f"line {i}: commented out {hit}, added TODO")
                 elif todo_added:
                     out.append(raw_line)
