@@ -107,6 +107,23 @@ is a claim nobody can reproduce — which is exactly what #259 is about.
 **Some version pins are guarded by tests** (`rev: v*` in `README.md` and
 `docs/GETTING_STARTED.md`). They fail loudly on release, which is the point.
 
+**`gh issue edit --add-assignee` says `'<user>' not found` for every outside
+contributor, and that message is a lie.** The CLI validates the login against
+`repos/.../assignees`, which lists only collaborators — on this repo, exactly
+one person. The user exists and the assignment is perfectly legal. Use REST:
+
+```bash
+gh api -X POST repos/dheerajjha/mcp-migrate/issues/<n>/assignees \
+  -f 'assignees[]=<login>'
+```
+
+This cost a wrong conclusion on 2026-09-17: `not found` read as "the account is
+gone, so the claim on #252 is stale", when @wdwd200's account was fine and the
+claim stood. **Suspect the identifier and the tool before you conclude the thing
+is dead** — the same rule the registry work runs on. Assigning matters here: a
+verbal "yes, it's yours" that is never recorded leaves the issue looking
+unclaimed to everyone else, which is how two people end up on one fix.
+
 ## 4. Releasing
 
 Standing instruction from the owner: **if `main` is ahead of the published
