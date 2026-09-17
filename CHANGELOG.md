@@ -4,6 +4,27 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-09-17
+
+### Added
+
+- **R001 reads JavaScript**, taking JavaScript rule coverage from 3/21 to
+  4/21. The header matcher is deliberately narrower than the TypeScript one:
+  `headers[...]`, optional chaining, `get`/`set`/`delete` and `setHeader` are
+  recognised, while `customHeaders`, `myHeaders` and `mySetHeader` are not.
+  An object literal carrying an `mcp-session-id` key is not a header read and
+  the rule declines to guess — on a breaking rule, a finding that is not real
+  costs more than one that is missed.
+
+### Fixed
+
+- **`search_code` and `search_wire` test every match on a line, not just the
+  first.** When the first match fell inside a string literal or a comment, the
+  whole line was discarded, taking any genuine code match after it with it —
+  `log("Mcp-Session-Id"); sid = req.headers[SESSION_ID]` reported nothing at
+  all. These are the matchers the identifier-based rules sit on, so the loss
+  was silent and in the direction that lets a breaking change ship unseen.
+
 ## [0.7.1] - 2026-09-17
 
 ### Fixed
