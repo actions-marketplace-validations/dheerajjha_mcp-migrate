@@ -2,8 +2,16 @@ from .base import Finding, Project, Rule, wire_method
 
 # Code-shaped identifiers -- SDK model/class names or plain Python names,
 # matched with search_code so a docstring/comment mention doesn't count.
-# `list_roots`/`create_message` are a little more generic-sounding, but
-# they're the exact same signal r007_deprecated_features.py already ships
+# `list_roots`/`create_message` are not "a little more generic-sounding",
+# which is what this comment used to say -- they are the names anyone gives
+# the function that builds a message or lists roots, in any protocol. A bare
+# `create_message` matched an LSP wire-framing helper in oraios/serena and
+# contributed to a `breaking` grade published about a project whose MCP code
+# was clean (#289). r007 already solved this by requiring the `session.`
+# receiver, so this now carries the same anchor rather than the bare name,
+# The SDK schema names beside it are distinctive and stay unanchored --
+# gating those would only add a way to miss a real finding. They are
+# otherwise the same signals r007 ships
 # with for these two features, just now also reported as `breaking` under
 # SEP-2322's replacement of the whole server-initiated-request pattern (as
 # opposed to r007's "still deprecated, not yet gone" framing). The two
@@ -12,8 +20,8 @@ from .base import Finding, Project, Rule, wire_method
 # symbol isn't, so `overlap.py` collapses the pair back into a single
 # finding at report time (see #221).
 FEATURES_CODE = {
-    r"\blist_roots\b|\bListRootsRequest(?:Params|Schema)?\b|\bListRootsResult(?:Schema)?\b": "Server-initiated roots/list",
-    r"\bcreate_message\b|\bCreateMessageRequest(?:Params|Schema)?\b|\bCreateMessageResult(?:Schema)?\b": "Server-initiated sampling/createMessage",
+    r"\bsession\.list_roots\b|\bListRootsRequest(?:Params|Schema)?\b|\bListRootsResult(?:Schema)?\b": "Server-initiated roots/list",
+    r"\bsession\.create_message\b|\bCreateMessageRequest(?:Params|Schema)?\b|\bCreateMessageResult(?:Schema)?\b": "Server-initiated sampling/createMessage",
     r"\bElicitRequest(?:Params|Schema)?\b|\bElicitResult(?:Schema)?\b": "Server-initiated elicitation/create",
     r"\bElicitCompleteNotificationParams(?:Schema)?\b": "notifications/elicitation/complete",
     r"\belicitationId\b": "elicitationId",

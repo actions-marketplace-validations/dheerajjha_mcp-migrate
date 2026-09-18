@@ -1133,3 +1133,86 @@ def test_r001_fires_when_first_match_is_in_string_literal(tmp_path):
     assert len(findings) == 1
     assert findings[0].line == 1
 
+
+
+# --- #289: MCP rules must not fire on Language Server Protocol code --------
+#
+# LSP has its own initialize handshake and its own message plumbing, and
+# spells some of it the way the MCP SDK does. A project implementing both --
+# which is most code-intelligence MCP servers -- used to take a `breaking`
+# finding per occurrence, which is what published a D/47 grade about a
+# project whose MCP surface was clean.
+
+
+def test_lsp_initialize_result_does_not_fire_r009(tmp_path):
+    """`InitializeResult` is an LSP type name as much as an MCP SDK one, so it
+    needs the file to show independent MCP surface before it counts."""
+    (tmp_path / "lsp_types.py").write_text(
+        "from typing import TypedDict\n"
+        "\n"
+        "class InitializeResult(TypedDict):\n"
+        "    capabilities: dict\n"
+    )
+    assert "R009" not in _findings_by_rule(tmp_path)
+
+
+def test_mcp_initialize_result_still_fires_r009(tmp_path):
+    """The same name in a file that is demonstrably MCP still counts -- the
+    gate must not have turned the rule off."""
+    (tmp_path / "srv.py").write_text(
+        "from mcp.server import Server\n"
+        "from mcp.types import InitializeResult\n"
+        "\n"
+        "app = Server('demo')\n"
+        "result: InitializeResult\n"
+    )
+    assert "R009" in _findings_by_rule(tmp_path)
+
+
+def test_distinctive_handshake_names_need_no_mcp_surface(tmp_path):
+    """`InitializeRequest` and `InitializedNotification` are MCP's alone --
+    neither appears in an LSP type module -- so they stay unanchored.
+    Gating them would only add a way to miss a real finding."""
+    (tmp_path / "h.py").write_text("x = InitializedNotification\ny = InitializeRequest\n")
+    assert "R009" in _findings_by_rule(tmp_path)
+
+
+def test_lsp_create_message_does_not_fire_r018(tmp_path):
+    """A bare `create_message` is what anyone calls the function that builds a
+    wire message. This one frames an LSP payload with Content-Length headers
+    and has nothing to do with MCP Sampling."""
+    (tmp_path / "server.py").write_text(
+        "import json\n"
+        "\n"
+        "def create_message(payload) -> tuple[bytes, bytes]:\n"
+        "    body = json.dumps(payload).encode()\n"
+        "    return (f'Content-Length: {len(body)}\\r\\n\\r\\n'.encode(), body)\n"
+        "\n"
+        "def send(payload):\n"
+        "    return b''.join(create_message(payload))\n"
+    )
+    assert "R018" not in _findings_by_rule(tmp_path)
+
+
+def test_session_create_message_still_fires_r018(tmp_path):
+    """Real MCP sampling goes through the session object, which is the anchor
+    r007 already uses for this identifier."""
+    (tmp_path / "srv.py").write_text(
+        "from mcp.server import Server\n"
+        "\n"
+        "async def handler(ctx):\n"
+        "    return await ctx.session.create_message(messages=[])\n"
+    )
+    assert "R018" in _findings_by_rule(tmp_path)
+
+
+def test_sdk_roots_import_still_fires_r018(tmp_path):
+    """The shape a real server has: SDK type names imported from mcp.types.
+    This is the true positive that must survive the fix."""
+    (tmp_path / "srv.py").write_text(
+        "from mcp.server import Server\n"
+        "from mcp.types import ListRootsResult, RootsCapability\n"
+        "\n"
+        "app = Server('demo')\n"
+    )
+    assert "R018" in _findings_by_rule(tmp_path)
