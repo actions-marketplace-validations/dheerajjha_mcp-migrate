@@ -4,6 +4,32 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-09-18
+
+### Fixed
+
+- **R009 and R018 no longer fire on Language Server Protocol code.**
+  ([#289](https://github.com/dheerajjha/mcp-migrate/issues/289)) LSP has its
+  own initialize handshake and its own message plumbing, and spells some of it
+  the way the MCP SDK does, so any project implementing both — which is most
+  code-intelligence MCP servers — took a `breaking` finding per occurrence.
+  It graded one such project D/47 off its LSP client while its actual MCP
+  server was clean.
+
+  The gate is deliberately narrow, because the wide version broke four
+  existing tests and they were right to break. `InitializeResult` is the only
+  name the two protocols share, so it alone requires the file to show
+  independent MCP surface; `InitializeRequest` and `InitializedNotification`
+  appear nowhere in an LSP type module and stay unanchored. R018 needed no
+  gate at all — every LSP hit was a bare `create_message`, so it now carries
+  the `session.` receiver R007 adopted after that same identifier matched
+  browser-use's Anthropic client.
+
+  Grades can move as a result: a project that was penalised for implementing
+  a second protocol correctly will score higher. No true positive was given
+  up to get there — a server importing `ListRootsResult` from `mcp.types`, or
+  speaking `notifications/initialized` on the wire, is still reported.
+
 ## [0.8.0] - 2026-09-17
 
 ### Added
