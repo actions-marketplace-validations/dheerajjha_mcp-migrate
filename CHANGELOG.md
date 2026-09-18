@@ -4,6 +4,29 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-09-18
+
+### Added
+
+- **R012 reads JavaScript**, taking JavaScript rule coverage from 4/21 to
+  5/21. `logging/setLevel` was removed from the spec, so a JavaScript server
+  still implementing it is broken against 2026-07-28 and until now heard
+  nothing at all. The port reuses the TypeScript schema-name matcher rather
+  than introducing a looser JavaScript one, which is what keeps
+  `logger.setLevel("debug")` — a line in most JavaScript codebases — silent.
+
+### Fixed
+
+- **Withdrawing a board entry no longer leaves its badge serving the old
+  grade.** ([#290](https://github.com/dheerajjha/mcp-migrate/issues/290))
+  An entry produces both a flat endpoint and an owner-scoped one, and neither
+  was removed when the entry went, so shields.io kept answering with a grade
+  the board no longer published. The renderer now prunes JSON endpoints under
+  `docs/badge/` that no current entry produces, along with the empty owner
+  directories left behind, and leaves non-JSON assets alone. The
+  committed-endpoint test now names the unexpected and missing paths instead
+  of reporting that two sorted lists differ at index 27.
+
 ## [0.8.1] - 2026-09-18
 
 ### Fixed

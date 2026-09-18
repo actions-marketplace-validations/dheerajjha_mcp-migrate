@@ -4,7 +4,7 @@ Notes for whoever maintains this next. The architecture is readable from the
 code, so this file is deliberately not about architecture — it is about the
 things that cost someone a day to learn and are invisible in a diff.
 
-Accurate as of 0.8.1 (2026-09-18).
+Accurate as of 0.9.0 (2026-09-18).
 
 ## 1. What it is, in one sentence
 
@@ -18,7 +18,7 @@ package renames rather than the protocol changes.
 
 ```
 $ mcp-migrate check ./my-server
-mcp-migrate v0.8.1  ->  my-server
+mcp-migrate v0.9.0  ->  my-server
 17 Python files, 21 rules, spec 2026-07-28
 
             rule    where                        what
