@@ -4,7 +4,212 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-09-18
+
+### Added
+
+- **R012 reads JavaScript**, taking JavaScript rule coverage from 4/21 to
+  5/21. `logging/setLevel` was removed from the spec, so a JavaScript server
+  still implementing it is broken against 2026-07-28 and until now heard
+  nothing at all. The port reuses the TypeScript schema-name matcher rather
+  than introducing a looser JavaScript one, which is what keeps
+  `logger.setLevel("debug")` — a line in most JavaScript codebases — silent.
+
 ### Fixed
+
+- **Withdrawing a board entry no longer leaves its badge serving the old
+  grade.** ([#290](https://github.com/dheerajjha/mcp-migrate/issues/290))
+  An entry produces both a flat endpoint and an owner-scoped one, and neither
+  was removed when the entry went, so shields.io kept answering with a grade
+  the board no longer published. The renderer now prunes JSON endpoints under
+  `docs/badge/` that no current entry produces, along with the empty owner
+  directories left behind, and leaves non-JSON assets alone. The
+  committed-endpoint test now names the unexpected and missing paths instead
+  of reporting that two sorted lists differ at index 27.
+
+## [0.8.1] - 2026-09-18
+
+### Fixed
+
+- **R009 and R018 no longer fire on Language Server Protocol code.**
+  ([#289](https://github.com/dheerajjha/mcp-migrate/issues/289)) LSP has its
+  own initialize handshake and its own message plumbing, and spells some of it
+  the way the MCP SDK does, so any project implementing both — which is most
+  code-intelligence MCP servers — took a `breaking` finding per occurrence.
+  It graded one such project D/47 off its LSP client while its actual MCP
+  server was clean.
+
+  The gate is deliberately narrow, because the wide version broke four
+  existing tests and they were right to break. `InitializeResult` is the only
+  name the two protocols share, so it alone requires the file to show
+  independent MCP surface; `InitializeRequest` and `InitializedNotification`
+  appear nowhere in an LSP type module and stay unanchored. R018 needed no
+  gate at all — every LSP hit was a bare `create_message`, so it now carries
+  the `session.` receiver R007 adopted after that same identifier matched
+  browser-use's Anthropic client.
+
+  Grades can move as a result: a project that was penalised for implementing
+  a second protocol correctly will score higher. No true positive was given
+  up to get there — a server importing `ListRootsResult` from `mcp.types`, or
+  speaking `notifications/initialized` on the wire, is still reported.
+
+## [0.8.0] - 2026-09-17
+
+### Added
+
+- **R001 reads JavaScript**, taking JavaScript rule coverage from 3/21 to
+  4/21. The header matcher is deliberately narrower than the TypeScript one:
+  `headers[...]`, optional chaining, `get`/`set`/`delete` and `setHeader` are
+  recognised, while `customHeaders`, `myHeaders` and `mySetHeader` are not.
+  An object literal carrying an `mcp-session-id` key is not a header read and
+  the rule declines to guess — on a breaking rule, a finding that is not real
+  costs more than one that is missed.
+
+### Fixed
+
+- **`search_code` and `search_wire` test every match on a line, not just the
+  first.** When the first match fell inside a string literal or a comment, the
+  whole line was discarded, taking any genuine code match after it with it —
+  `log("Mcp-Session-Id"); sid = req.headers[SESSION_ID]` reported nothing at
+  all. These are the matchers the identifier-based rules sit on, so the loss
+  was silent and in the direction that lets a breaking change ship unseen.
+
+## [0.7.1] - 2026-09-17
+
+### Fixed
+
+- **Fixers no longer edit inside an f-string on Python 3.12 and later.**
+  PEP 701 stopped tokenising an f-string as one `STRING`, splitting it into
+  `FSTRING_START` / `FSTRING_MIDDLE` / `FSTRING_END` — so the string-detection
+  pass matched nothing and a multiline f-string came back as *no string data at
+  all*, which is indistinguishable from a file with no strings in it. A fixer
+  was then free to comment out a line that was literal text inside the
+  f-string. Measured on 3.14: a four-line f-string reported zero string lines
+  before this, four after. Nested f-strings are tracked on a stack so an inner
+  literal's closing quotes cannot end the outer span early.
+
+- **Comment-out fixers no longer empty a function body.**
+  ([#245](https://github.com/dheerajjha/mcp-migrate/issues/245))
+
+  The other half of #249. R009, R011, R012, R013 and R019 comment out lines
+  that reference a removed symbol, and the only statement a function has is
+  as load-bearing as an import member: commenting it out left
+  `def handlers():` with no suite, which does not parse -- so the #244 guard
+  refused the file and nothing got fixed. Those lines now keep an indented
+  `pass` beside the TODO. The shape is recognised from indentation alone (a
+  `def` header outside any string, with one live line under it); anything
+  else is still refused rather than guessed at.
+
+## [0.7.0] - 2026-09-14
+
+### Fixed
+
+- **Two rules describing the same fact are one finding, whatever line they
+  matched on.** ([#221](https://github.com/dheerajjha/mcp-migrate/issues/221),
+  [#250](https://github.com/dheerajjha/mcp-migrate/pull/250))
+
+  The R007/R018 merge keyed on `(path, line)`, so the pair only collapsed when
+  both rules happened to match the same line. `mcp-server-git` uses Roots, and
+  reported it four times at two severities: R007 on lines 12 and 464, R018 on
+  lines 11 and 468 — one fact, four findings, a grade of D.
+
+  Rules already classify every match into a named feature, and that
+  classification is the identity the merge wanted. Grouping on
+  `(path, feature)` needs no symbol resolution and no import-aware pass: the
+  claim being merged is "same feature", which the rules decided at match time.
+  The line key stays as a fallback for findings that carry no feature.
+
+  It also stops a false merge the line key was making: one busy line naming two
+  *different* features of the pair was being collapsed into a single finding.
+
+  `mcp-server-git` moves from **D/58 to C/66** at the same commit. The server
+  did not change; the double-count did. It is the only board entry affected —
+  all eighteen were re-graded to check.
+
+## [0.6.0] - 2026-09-13
+
+### Added
+
+- **A landing page, at a URL that had been answering 404.**
+  ([#271](https://github.com/dheerajjha/mcp-migrate/pull/271),
+  [#272](https://github.com/dheerajjha/mcp-migrate/pull/272))
+
+  GitHub Pages was enabled on this repo with nothing in `docs/` to serve, so
+  <https://dheerajjha.github.io/mcp-migrate/> returned 404 while reporting
+  "built" in settings. It now carries every rule with the spec change behind
+  it, and the board. `pyproject.toml` also gained `[project.urls]`, which it
+  had never had -- the PyPI page linked to nothing at all.
+
+- **An ecosystem report.**
+  ([#275](https://github.com/dheerajjha/mcp-migrate/pull/275))
+
+  <https://dheerajjha.github.io/mcp-migrate/findings.html> -- 578 Python
+  servers from the official registry, scanned against 2026-07-28.
+  `Mcp-Session-Id`, the change that dominated the discussion, appears in
+  3.3% of them; 83.6% have nothing breaking to fix. Generated from
+  `data/ecosystem-scan.json` and pinned by tests, so no figure on it can go
+  stale. Reproduce with `python scripts/ecosystem_scan.py --all`.
+
+- **A getting-started guide and a full rule reference.**
+  ([#241](https://github.com/dheerajjha/mcp-migrate/pull/241), thanks
+  @sinhphamvan) Both under `docs/`, both now pinned to the code by
+  `tests/test_docs_pages.py` ([#273](https://github.com/dheerajjha/mcp-migrate/pull/273)).
+
+### Changed
+
+- **R010 decides on the SDK a project declares, not on the project's own source.**
+  ([#257](https://github.com/dheerajjha/mcp-migrate/issues/257))
+
+  R010 fired on 16 of 16 board servers and told each of them to add a
+  `server/discover` handler. On `mcp` 2.x the SDK registers that handler in
+  `Server.__init__`, so the evidence is never in the project's source and
+  the finding was false; on 1.x the method does not exist at all, so there
+  was nothing anyone could add. Unactionable in both directions -- which is
+  why two contributors independently wrote fixers emitting `@app.discover()`,
+  an API in no version of the SDK.
+
+  It now reads the declared `mcp` floor: silent at `>= 2.0`, fires at
+  `< 2.0` with "upgrade" as the remediation, and **silent when it cannot
+  tell**. A declared floor is not a resolved version, and a finding nobody
+  can act on costs more than a missing one.
+
+  **This moves published grades.** Three board entries go up by 3 points
+  (`mcp-neo4j-cypher` B/89 -> B/92, `mcp-server-motherduck` and
+  `mcp-server-qdrant` A/97 -> A/100). If you have a badge, it may move.
+
+### Fixed
+
+- **`check src/` no longer ignores the project's own config.**
+  ([#236](https://github.com/dheerajjha/mcp-migrate/issues/236), thanks @aryansk)
+
+  `load_config` read only the scan path, so pointing the tool at a
+  subdirectory silently discarded the repo's `pyproject.toml` or
+  `.mcp-migrate.toml` -- including every rule you had disabled. It now walks
+  up to the repository root (`.git` ceiling, filesystem root backstop), a
+  section-less inner `pyproject.toml` no longer stops the walk, and the
+  output prints where the config came from.
+
+- **R001 was grading the variable name, not the header.**
+  ([#267](https://github.com/dheerajjha/mcp-migrate/pull/267))
+
+  The Python path ran every alternative through `search_code`, which
+  discards string tokens. `Mcp-Session-Id` is not a valid Python
+  identifier, so it can only appear inside a string literal -- that
+  alternative could never match. Renaming a local away from
+  `mcp_session_id` turned a breaking finding into a clean A/100. The header
+  literal now goes through `search_wire`, anchored to a real access, so a
+  docstring or log message naming it still does not fire.
+
+- **Comment-out fixers no longer comment out import members.**
+  ([#245](https://github.com/dheerajjha/mcp-migrate/issues/245))
+
+  R009, R011, R012, R013 and R019 flag SDK type names that arrive in
+  parenthesised `from x import (A, B)` lists. Commenting each flagged member
+  line out left `from x import ( )`, which does not parse -- so the #244
+  guard refused the whole file and nothing got fixed. These fixers now
+  remove the flagged name from the list (a shared `strip_import_members`
+  helper), dropping the whole statement with its TODO when the list
+  empties, so the file stays parseable at every intermediate state.
 
 - **SARIF is accepted by GitHub code scanning again -- or rather, for the first time.** ([#262](https://github.com/dheerajjha/mcp-migrate/issues/262))
 

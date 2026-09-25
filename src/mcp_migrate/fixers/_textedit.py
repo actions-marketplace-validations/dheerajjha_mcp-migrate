@@ -9,10 +9,25 @@ splice, never an `ast.unparse` round-trip.
 """
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 OPEN = "([{"
 CLOSE = ")]}"
+
+# A parenthesised `from x import (` opener: the only import shape where a
+# fixer commenting out a member line leaves `from x import ( )`, which does
+# not parse (see `strip_parenthesised_import_members`).
+_FROM_IMPORT_PAREN_RX = re.compile(r"^\s*from\s+\S+\s+import\s*\(")
+
+# A `def`/`async def` header -- the one suite shape `sole_function_body_lines`
+# recognises (see it for why the others are left to the #244 guard).
+_DEF_HEADER_RX = re.compile(r"^\s*(?:async\s+)?def\b")
+# The fixers that ask about function bodies also read TypeScript, where a
+# line starting `def` is not a function at all, so the scan is gated to the
+# files it is true for. Kept in sync with the "python" entries of
+# `languages.EXTENSIONS`.
+_PYTHON_SUFFIXES = frozenset({".py", ".pyi"})
 
 
 def find_matching_close(lines: list[str], open_idx: int, open_col: int) -> tuple[int, int] | None:
@@ -54,6 +69,217 @@ def leading_ws(line: str) -> str:
     return line[: len(line) - len(line.lstrip(" \t"))]
 
 
+def strip_import_members(lines, hit_fn, todo, label):
+    """Remove members of parenthesised `from x import (...)` statements whose
+    names ``hit_fn`` flags, instead of commenting the member lines out.
+
+    Commenting every member leaves ``from mcp.types import ( )``, which does
+    not parse, so the fix guard would refuse the whole file and nothing would
+    be fixed (#245). Removing the name keeps the import valid at every
+    intermediate state; if the list empties, the statement is removed
+    entirely. The TODO is placed above the ``from`` statement once.
+
+    ``hit_fn`` receives a single member name and returns a truthy description
+    when the fixer should drop it. Returns ``(new_lines, changes)`` where
+    ``changes`` describes each edited statement.
+    """
+    new_lines = list(lines)
+    changes: list[str] = []
+    i = 0
+    while i < len(new_lines):
+        if not _FROM_IMPORT_PAREN_RX.match(new_lines[i]):
+            i += 1
+            continue
+        open_idx = i
+        open_col = new_lines[i].index("(")
+        close = find_matching_close(new_lines, open_idx, open_col)
+        if close is None:
+            i += 1
+            continue
+        close_idx, close_col = close
+
+        edited_any = False
+        remaining_any = False
+
+        if close_idx == open_idx:
+            # Single-line import: edit the member text between the parens once.
+            head, tail = new_lines[open_idx][: open_col + 1], new_lines[open_idx][close_col:]
+            middle = new_lines[open_idx][open_col + 1 : close_col]
+            edited, remaining, changed = _strip_members_in_text(middle, hit_fn)
+            if changed:
+                new_lines[open_idx] = head + edited + tail
+                edited_any = True
+                remaining_any = remaining
+        else:
+            # Open line: member text after '(' (exclude the close paren).
+            head, tail = new_lines[open_idx][: open_col + 1], ""
+            middle = new_lines[open_idx][open_col + 1 :]
+            edited, remaining, changed = _strip_members_in_text(middle, hit_fn)
+            if changed:
+                new_lines[open_idx] = head + edited + tail
+                edited_any = True
+                remaining_any = remaining or remaining_any
+            elif middle.strip():
+                remaining_any = True  # untouched member text on the open line
+            # Middle member lines.
+            for j in range(open_idx + 1, close_idx):
+                line = new_lines[j]
+                stripped = line.strip()
+                if not stripped or stripped.startswith(("#", "//")):
+                    continue
+                edited, remaining, changed = _strip_members_in_text(line, hit_fn)
+                if not changed:
+                    remaining_any = True  # untouched member line: list non-empty
+                    continue
+                # A member-only line whose name was removed leaves just
+                # indentation -- blank it instead of leaving trailing
+                # whitespace (the import itself stays valid).
+                new_lines[j] = "" if not edited.strip(" \t\n") else edited
+                edited_any = True
+                remaining_any = remaining or remaining_any
+            # Close line: member text before ')'.
+            if new_lines[close_idx][:close_col].strip():
+                head, tail = "", new_lines[close_idx][close_col:]
+                middle = new_lines[close_idx][:close_col]
+                edited, remaining, changed = _strip_members_in_text(middle, hit_fn)
+                if changed:
+                    new_lines[close_idx] = head + edited + tail
+                    edited_any = True
+                    remaining_any = remaining or remaining_any
+                else:
+                    remaining_any = True  # untouched member text on the close line
+
+        if not edited_any:
+            i = close_idx + 1
+            continue
+        indent = leading_ws(new_lines[open_idx])
+        if remaining_any:
+            new_lines.insert(open_idx, f"{indent}{todo}\n")
+            changes.append(f"line {open_idx + 1}: removed {label} member(s) from the import")
+            i = close_idx + 2
+        else:
+            # The list emptied: drop the whole statement, keep the TODO.
+            new_lines[open_idx : close_idx + 1] = [f"{indent}{todo}\n"]
+            changes.append(f"line {open_idx + 1}: removed {label}; empty import dropped")
+            i = open_idx + 1
+    return new_lines, changes
+
+
+def _strip_members_in_text(text, hit_fn):
+    """Remove comma-separated members that ``hit_fn`` flags from ``text``.
+
+    Returns ``(new_text, remaining_any, changed)``. Leading indentation and a
+    trailing comment/newline are preserved; a line whose members are all
+    removed becomes indentation-only (the caller keeps or drops the line).
+    """
+    newline = "\n" if text.endswith("\n") else ""
+    body = text[: len(text) - len(newline)]
+    indent = leading_ws(body)
+    stripped = body.strip()
+    comment = ""
+    core = stripped
+    if "#" in core:
+        comment = core[core.index("#") :]
+        core = core[: core.index("#")]
+    trailing_comma = core.rstrip().endswith(",")
+    core = core.rstrip().rstrip(",").strip()
+    if not core:
+        return text, False, False
+    parts = [p.strip() for p in core.split(",") if p.strip()]
+    kept = [p for p in parts if not hit_fn(p)]
+    if len(kept) == len(parts):
+        return text, True, False
+    if not kept:
+        return indent + newline, False, True
+    joined = ", ".join(kept)
+    if trailing_comma:
+        joined += ","
+    if comment:
+        joined += "  " + comment
+    return indent + joined + newline, True, True
+
+
+def _live_line(line: str) -> bool:
+    """True for a line that holds a suite open: not blank, not a comment."""
+    stripped = line.strip()
+    return bool(stripped) and not stripped.startswith("#")
+
+
+def _opens_suite(line: str) -> bool:
+    """True if `line` ends in the `:` that indents a block beneath it.
+
+    A trailing comment is not part of the header, so `def f():  # noqa`
+    counts. Splitting on the first `#` is the same shortcut
+    `_strip_members_in_text` takes, and it errs the safe way: a `#` inside a
+    string literal truncates the line, the colon goes missing, and the header
+    is simply not recognised.
+    """
+    return line.split("#", 1)[0].rstrip().endswith(":")
+
+
+def sole_function_body_lines(lines, path: Path) -> set[int]:
+    """The 1-indexed lines that are the only live statement of a function body.
+
+    Commenting one of those out leaves `def handlers():` with nothing under
+    it, which does not parse -- so the #244 guard refuses the whole file and
+    the user gets no fix at all. That is the sole-statement half of #245;
+    callers keep an indented `pass` beside the TODO for these lines.
+
+    The signal is indentation, not a parse: a body runs from its `def` header
+    down to the next live line indented no deeper than the header, so the
+    single live line under it is the whole body. That is Python's own rule
+    for the shapes in question, and the only other read of the source is the
+    `string_lines` call below -- which matters, because the file in hand is
+    often mid-migration and may not parse at all. A header counts only when
+    it plainly opens a block and is not string data, and the body only when
+    one live line sits under it -- itself code rather than string data, since
+    the repair edits that line -- so a docstring, a second statement or a
+    nested block all decline the case on their own.
+
+    Everything else keeps the pre-existing outcome, where the file is refused
+    rather than edited (#244). That is the safe direction to be wrong in: a
+    `pass` nobody needed is a stray no-op in someone's diff, while a missing
+    one costs them the whole file.
+    """
+    if path.suffix.lower() not in _PYTHON_SUFFIXES:
+        return set()
+    # Prose is not structure: a `def` written inside a triple-quoted string is
+    # a code example in a docstring, and a `pass` written under it would land
+    # in the user's string data (the #105 family). `string_lines` is this
+    # module's existing answer to "which lines are string data"; it fails safe
+    # on source it cannot tokenize (every line comes back), which declines the
+    # case rather than guessing at it.
+    #
+    # Headers only. A docstring is a statement like any other -- it is exactly
+    # what keeps a body non-empty -- so body lines are counted as they are, and
+    # filtering them out would invent a `pass` for a body that still holds one.
+    string_data = string_lines("".join(lines), path)
+    out: set[int] = set()
+    for i, line in enumerate(lines):
+        if i + 1 in string_data:
+            continue
+        if not _DEF_HEADER_RX.match(line) or not _opens_suite(line):
+            continue
+        header_indent = len(leading_ws(line))
+        body = []
+        for j in range(i + 1, len(lines)):
+            if not _live_line(lines[j]):
+                continue
+            if len(leading_ws(lines[j])) <= header_indent:
+                break  # dedented: the body ended, and it was not empty
+            body.append(j)
+        # The one line still has to be code. A docstring holding the flagged
+        # name is the body's only statement *and* string data, and commenting
+        # it out with a `pass` under it writes an edit inside the user's
+        # string -- turning a #244 refusal into a parseable one (#105's
+        # family). String data is counted as the statement it is, so that a
+        # body keeping a docstring is never called empty; it just cannot be
+        # the line the repair acts on.
+        if len(body) == 1 and (body[0] + 1) not in string_data:
+            out.add(body[0] + 1)
+    return out
+
+
 def string_lines(source: str, path_or_lang: str | Path = "python") -> set[int]:
     """Return 1-indexed line numbers in ``source`` that are part of a string literal.
 
@@ -86,6 +312,27 @@ def _py_string_lines(
     source: str, total_lines: int, all_lines: set[int], io_mod: any, tok_mod: any
 ) -> set[int]:
     lines: set[int] = set()
+    # PEP 701 (3.12+) stops emitting one STRING for an f-string: it splits the
+    # literal into FSTRING_START / FSTRING_MIDDLE / FSTRING_END, so the STRING
+    # branch below matches nothing and a multiline f-string used to come back
+    # empty -- an empty set being indistinguishable from "no string data here"
+    # for every caller, and unlike the fail-safe at the bottom it raises
+    # nothing to trigger on. The two names do not exist before 3.12, where
+    # `getattr` leaves them None and both branches below are unreachable, so
+    # the <=3.11 single-STRING path is untouched: this is parity with it, not
+    # a redesign of it.
+    fstring_start = getattr(tok_mod, "FSTRING_START", None)
+    fstring_end = getattr(tok_mod, "FSTRING_END", None)
+    # A stack rather than one remembered span. An f-string nested inside a
+    # replacement field pushes its own entry, so the END token that pops it is
+    # the one that closes *it* -- pairing a START with the next END regardless
+    # of nesting would end the outer span at the inner literal's closing
+    # quotes and under-report the rest of it. Marking each popped entry on its
+    # own also covers the mirror shape, where the inner literal is the
+    # triple-quoted one and the outer is not: on <=3.11 that is exactly what
+    # the tokenizer hands over as a STRING, because its own scanner finds the
+    # inner `'''`, so marking it is parity too.
+    open_fstrings: list[tuple[int, bool]] = []
     try:
         g = tok_mod.generate_tokens(io_mod.StringIO(source).readline)
         for tok in g:
@@ -95,6 +342,21 @@ def _py_string_lines(
                     s_line = tok.start[0]
                     e_line = tok.end[0]
                     lines.update(range(s_line, e_line + 1))
+            elif fstring_start is not None and tok.type == fstring_start:
+                head = tok.string.lstrip("rRbBuUfF")
+                open_fstrings.append(
+                    (tok.start[0], head.startswith('"""') or head.startswith("'''"))
+                )
+            elif fstring_end is not None and tok.type == fstring_end:
+                if open_fstrings:
+                    s_line, triple = open_fstrings.pop()
+                    if triple:
+                        # The whole literal, replacement fields included. On
+                        # <=3.11 the single STRING token covers those lines
+                        # too, so callers already treat them as string data;
+                        # telling literal text from embedded code is a
+                        # separate question this helper does not answer.
+                        lines.update(range(s_line, tok.end[0] + 1))
     except (tok_mod.TokenError, SyntaxError, IndentationError, ValueError):
         return all_lines
     return lines

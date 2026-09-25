@@ -1,17 +1,31 @@
 import re
 
-from .base import Finding, Project, Rule, wire_method
+from .base import Finding, Project, Rule, mcp_surface_paths, wire_method
 
 # `InitializeRequest`, `InitializeResult` and `InitializedNotification` are
-# the MCP SDK's own pydantic model names for the initialize handshake --
-# they don't occur in ordinary, non-MCP code, so matching them directly
-# carries essentially no false-positive risk (unlike a bare `initialize`,
-# which is one of the most overloaded words in software: class
-# initializers, database `.initialize()` calls, config keys, ...).
+# the MCP SDK's own pydantic model names for the initialize handshake. They
+# are not, however, only MCP's: the **Language Server Protocol** has its own
+# initialize handshake and spells the types the same way, so a project that
+# implements LSP anywhere -- which is most code-intelligence MCP servers --
+# used to take a `breaking` finding per occurrence. That is what graded
+# oraios/serena D/47 off its `src/solidlsp/` client while its actual MCP
+# server was clean. See #289.
+#
+# So the names are gated on the file showing independent MCP surface, the
+# same treatment #234 gave R005. A bare `initialize` is still not matched at
+# all -- it is one of the most overloaded words in software.
+# `InitializeRequest` and `InitializedNotification` are MCP's alone -- neither
+# appears anywhere in an LSP type module -- so they stay unanchored.
 HANDSHAKE_CODE_RX = re.compile(
-    r"\bInitializeRequest(?:Params|Schema)?\b|\bInitializeResult(?:Schema)?\b"
+    r"\bInitializeRequest(?:Params|Schema)?\b"
     r"|\bInitializedNotification(?:Schema)?\b"
 )
+
+# `InitializeResult` is the one name the two protocols share, so it alone is
+# gated on the file showing independent MCP surface. Gating the other two as
+# well would buy nothing and add a way to miss a real finding -- the warning
+# `mcp_surface_paths` carries in its own docstring.
+SHARED_WITH_LSP_RX = re.compile(r"\bInitializeResult(?:Schema)?\b")
 
 # --- TypeScript -----------------------------------------------------------
 #
@@ -25,9 +39,10 @@ HANDSHAKE_CODE_RX = re.compile(
 # needs to catch. Same treatment `r011_ping_removed.py` gives
 # `PingRequest\w*`, for the same reason.
 TS_HANDSHAKE_CODE_RX = (
-    r"\bInitializeRequest(?:Params|Schema)?\b|\bInitializeResult(?:Schema)?\b"
+    r"\bInitializeRequest(?:Params|Schema)?\b"
     r"|\bInitializedNotification(?:Schema)?\b"
 )
+TS_SHARED_WITH_LSP_RX = r"\bInitializeResult(?:Schema)?\b"
 
 # The wire name is spelled the same in both languages, and needs
 # `search_wire` in both for the same reason -- see the note in
@@ -65,6 +80,11 @@ class InitializeHandshakeStillImplemented(Rule):
         # isn't a real handler for it.
         for f, line, text in project.search_code(HANDSHAKE_CODE_RX.pattern):
             out.append(self.finding(MESSAGE_CODE, f, line, text))
+        surface = mcp_surface_paths(project)
+        for f, line, text in project.search_code(SHARED_WITH_LSP_RX.pattern):
+            if f.path not in surface:
+                continue
+            out.append(self.finding(MESSAGE_CODE, f, line, text))
         # `notifications/initialized` is only ever valid as a JSON-RPC
         # method-name string -- it can't appear as a bare code identifier --
         # so it always starts inside a STRING token and search_code would
@@ -82,11 +102,17 @@ class InitializeHandshakeStillImplemented(Rule):
         # string literal, which `search_code` discards wholesale.
         seen: set[tuple[str, int]] = set()
         out: list[Finding] = []
-        for pattern, message, search in (
-            (TS_HANDSHAKE_CODE_RX, MESSAGE_CODE, project.search_code),
-            (WIRE_RX, MESSAGE_WIRE, project.search_wire),
+        surface = mcp_surface_paths(project)
+        for pattern, message, search, gated in (
+            (TS_HANDSHAKE_CODE_RX, MESSAGE_CODE, project.search_code, False),
+            (TS_SHARED_WITH_LSP_RX, MESSAGE_CODE, project.search_code, True),
+            (WIRE_RX, MESSAGE_WIRE, project.search_wire, False),
         ):
             for f, line, text in search(pattern):
+                # Only InitializeResult is shared with LSP; the other two
+                # type names and the wire name are MCP's alone.
+                if gated and f.path not in surface:
+                    continue
                 # One dispatcher line can carry both signals --
                 # `case "notifications/initialized": return this.onInitializedNotification()`
                 # is a single handshake implementation, not two. Each

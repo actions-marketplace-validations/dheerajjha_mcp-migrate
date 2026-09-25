@@ -394,6 +394,21 @@ def test_r010_still_respects_a_real_server_discover_implementation(tmp_path):
     assert ServerDiscoverMissing().check(project) == []
 
 
+def _r010_declare_legacy_sdk(root) -> None:
+    """Make the fixture a 1.x project, which is the only case R010 speaks to.
+
+    Since #257, R010 stays silent unless the project declares an SDK floor
+    below 2.0: on 2.x `Server.__init__` registers `server/discover` itself,
+    so an absence check against the project's own source reports a gap that
+    is not there, and an undeclared floor is not evidence of an old one.
+    Every one of these tests is about the *suppression* logic, so each needs
+    the rule to be speaking at all.
+    """
+    (root / "pyproject.toml").write_text(
+        '[project]\nname = "t"\nversion = "0"\ndependencies = ["mcp>=1.9.0"]\n'
+    )
+
+
 def _r010_has_handlers_source() -> str:
     # Enough to satisfy _has_request_handlers on its own, independent of
     # whatever the test appends about server/discover.
@@ -414,6 +429,7 @@ def test_r010_is_not_suppressed_by_a_todo_comment_admitting_the_gap(tmp_path):
     (tmp_path / "server.py").write_text(
         _r010_has_handlers_source() + "# TODO: server/discover is not implemented yet\n"
     )
+    _r010_declare_legacy_sdk(tmp_path)
     project = load_project(tmp_path)
     findings = ServerDiscoverMissing().check(project)
     assert findings, "a TODO admitting the gap must not suppress R010"
@@ -424,6 +440,7 @@ def test_r010_is_not_suppressed_by_a_docstring_mentioning_the_gap(tmp_path):
         _r010_has_handlers_source()
         + '"""We do not implement server/discover."""\n'
     )
+    _r010_declare_legacy_sdk(tmp_path)
     project = load_project(tmp_path)
     findings = ServerDiscoverMissing().check(project)
     assert findings, "a docstring mentioning the gap must not suppress R010"
@@ -436,6 +453,7 @@ def test_r010_still_suppressed_by_a_real_wire_string_literal(tmp_path):
     (tmp_path / "server.py").write_text(
         _r010_has_handlers_source() + 'ROUTES = {"server/discover": handle_discover}\n'
     )
+    _r010_declare_legacy_sdk(tmp_path)
     project = load_project(tmp_path)
     assert ServerDiscoverMissing().check(project) == []
 
@@ -450,6 +468,7 @@ def test_r010_is_not_suppressed_by_a_wire_name_merely_containing_discover(tmp_pa
         _r010_has_handlers_source()
         + 'ROUTES = {"server/discoverLatency": handle_latency}\n'
     )
+    _r010_declare_legacy_sdk(tmp_path)
     project = load_project(tmp_path)
     findings = ServerDiscoverMissing().check(project)
     assert findings, (
@@ -954,3 +973,246 @@ def test_the_surface_gate_is_not_fooled_by_a_longer_wire_name(tmp_path):
     )
     by_rule = _findings_by_rule(tmp_path)
     assert "R020" not in by_rule, by_rule.get("R020")
+
+
+
+    
+# --- R001: the header literal, not just the mcp_session_id identifier -----
+#
+# See #260: R001's Python path matched Mcp-Session-Id, mcp_session_id, and
+# MCP_SESSION_ID through search_code, which skips every STRING token.
+# Mcp-Session-Id is not a valid Python identifier, so the header-literal
+# alternative could never match real code -- only the two identifier
+# spellings ever fired. Renaming the local that a header read is stored in
+# made a real breaking finding disappear.
+
+
+def test_header_read_fires_r001_even_when_the_local_is_not_named_mcp_session_id(tmp_path):
+    """The issue's exact repro: identical files except for one local's name.
+
+    Before the fix these graded differently (C 75 named / A 100 renamed)
+    even though both read the same removed header -- R001 was grading the
+    variable name, not the header access.
+    """
+    (tmp_path / "named" / "server.py").parent.mkdir(parents=True)
+    (tmp_path / "named" / "server.py").write_text(
+        "def handle(request):\n"
+        '    mcp_session_id = request.headers.get("Mcp-Session-Id")\n'
+        "    return lookup(mcp_session_id)\n"
+    )
+    (tmp_path / "renamed" / "server.py").parent.mkdir(parents=True)
+    (tmp_path / "renamed" / "server.py").write_text(
+        "def handle(request):\n"
+        '    session = request.headers.get("Mcp-Session-Id")\n'
+        "    return lookup(session)\n"
+    )
+    named = _findings_by_rule(tmp_path / "named")
+    renamed = _findings_by_rule(tmp_path / "renamed")
+    assert "R001" in named, named
+    assert "R001" in renamed, (
+        "renaming the local away from mcp_session_id must not hide the "
+        f"header read: {renamed}"
+    )
+
+
+def test_header_read_via_dict_bracket_access_fires_r001(tmp_path):
+    (tmp_path / "srv.py").write_text(
+        "def handle(request):\n"
+        '    return request.headers["Mcp-Session-Id"]\n'
+    )
+    assert "R001" in _findings_by_rule(tmp_path)
+
+
+def test_header_read_via_bytes_literal_fires_r001(tmp_path):
+    """mcp-atlassian's real form: `headers.get(b"mcp-session-id")`."""
+    (tmp_path / "srv.py").write_text(
+        "def handle(headers):\n"
+        '    return headers.get(b"mcp-session-id")\n'
+    )
+    assert "R001" in _findings_by_rule(tmp_path)
+
+
+def test_header_and_identifier_hit_on_one_line_is_one_finding_not_two(tmp_path):
+    (tmp_path / "srv.py").write_text(
+        "def handle(request):\n"
+        '    mcp_session_id = request.headers.get("Mcp-Session-Id")\n'
+        "    return mcp_session_id\n"
+    )
+    by_rule = _findings_by_rule(tmp_path)
+    line_2_hits = [f for f in by_rule.get("R001", []) if f.line == 2]
+    assert len(line_2_hits) == 1, (
+        "identifier and header-literal patterns both matching line 2 "
+        f"should collapse to one finding, got {line_2_hits}"
+    )
+
+
+def test_header_mention_in_docstring_comment_or_log_still_does_not_fire_r001(tmp_path):
+    """search_wire keeps ordinary string literals (unlike search_code), so
+    the header-literal pattern must stay anchored to a real access -- a
+    log message that merely names the header must not fire."""
+    (tmp_path / "srv.py").write_text(
+        '"""This server predates Mcp-Session-Id and never reads it."""\n'
+        "import logging\n"
+        "logger = logging.getLogger(__name__)\n\n"
+        "def handle(request):\n"
+        "    # some older clients still send an Mcp-Session-Id header\n"
+        '    logger.debug("Mcp-Session-Id, if sent, is ignored")\n'
+        "    return {}\n"
+    )
+    by_rule = _findings_by_rule(tmp_path)
+    assert "R001" not in by_rule, by_rule.get("R001")
+
+
+def test_search_code_finds_code_match_after_string_on_same_line(tmp_path):
+    """#281: search_code() must not drop a line when an earlier match on that
+    line is inside a string. It walks all matches and yields the first match
+    outside content spans."""
+    (tmp_path / "srv.py").write_text(
+        'log("Mcp-Session-Id"); sid = req.headers[SESSION_ID]\n'
+        'msg = "WIDGET seen"; real_widget = WIDGET + 1\n'
+        'WIDGET = WIDGET + 2\n'
+    )
+    project = load_project(tmp_path)
+    hits = list(project.search_code(r"Mcp-Session-Id|SESSION_ID"))
+    assert len(hits) == 1
+    assert hits[0][1] == 1
+    assert "sid = req.headers[SESSION_ID]" in hits[0][2]
+
+    widget_hits = list(project.search_code(r"WIDGET"))
+    assert len(widget_hits) == 2
+    assert widget_hits[0][1] == 2
+    assert widget_hits[1][1] == 3
+
+
+def test_search_wire_finds_wire_match_after_prose_on_same_line(tmp_path):
+    """#281: search_wire() must not drop a line when an earlier match on that
+    line is inside prose (e.g. a triple-quoted string)."""
+    (tmp_path / "srv.py").write_text(
+        '"""calls resources/subscribe"""; handler = {"resources/subscribe": handle}\n'
+    )
+    project = load_project(tmp_path)
+    hits = list(project.search_wire(r"resources/subscribe"))
+    assert len(hits) == 1
+    assert hits[0][1] == 1
+    assert 'handler = {"resources/subscribe": handle}' in hits[0][2]
+
+
+def test_search_code_finds_code_match_after_block_comment_or_string_in_typescript(tmp_path):
+    """#281: TypeScript/JavaScript files also walk all matches in search_code."""
+    (tmp_path / "srv.ts").write_text(
+        '/* McpSessionId deprecated */ const s = req.headers[McpSessionId];\n'
+        'const label = "McpSessionId"; const sid = McpSessionId;\n'
+    )
+    project = load_project(tmp_path)
+    hits = list(project.search_code(r"McpSessionId"))
+    assert len(hits) == 2
+    assert hits[0][1] == 1
+    assert hits[1][1] == 2
+
+
+def test_search_wire_finds_wire_match_after_block_comment_in_typescript(tmp_path):
+    """#281: search_wire() in TypeScript finds wire string after block comment on same line."""
+    (tmp_path / "srv.ts").write_text(
+        '/* calls tools/list */ const h = {"method": "tools/list"};\n'
+    )
+    project = load_project(tmp_path)
+    hits = list(project.search_wire(r"tools/list"))
+    assert len(hits) == 1
+    assert hits[0][1] == 1
+
+
+def test_r001_fires_when_first_match_is_in_string_literal(tmp_path):
+    """#281: R001 must fire when a code match for mcp_session_id appears after
+    a string literal containing mcp_session_id on the same line."""
+    (tmp_path / "srv.py").write_text(
+        'log("handling mcp_session_id"); sid = mcp_session_id\n'
+    )
+    by_rule = _findings_by_rule(tmp_path)
+    assert "R001" in by_rule
+    findings = by_rule["R001"]
+    assert len(findings) == 1
+    assert findings[0].line == 1
+
+
+
+# --- #289: MCP rules must not fire on Language Server Protocol code --------
+#
+# LSP has its own initialize handshake and its own message plumbing, and
+# spells some of it the way the MCP SDK does. A project implementing both --
+# which is most code-intelligence MCP servers -- used to take a `breaking`
+# finding per occurrence, which is what published a D/47 grade about a
+# project whose MCP surface was clean.
+
+
+def test_lsp_initialize_result_does_not_fire_r009(tmp_path):
+    """`InitializeResult` is an LSP type name as much as an MCP SDK one, so it
+    needs the file to show independent MCP surface before it counts."""
+    (tmp_path / "lsp_types.py").write_text(
+        "from typing import TypedDict\n"
+        "\n"
+        "class InitializeResult(TypedDict):\n"
+        "    capabilities: dict\n"
+    )
+    assert "R009" not in _findings_by_rule(tmp_path)
+
+
+def test_mcp_initialize_result_still_fires_r009(tmp_path):
+    """The same name in a file that is demonstrably MCP still counts -- the
+    gate must not have turned the rule off."""
+    (tmp_path / "srv.py").write_text(
+        "from mcp.server import Server\n"
+        "from mcp.types import InitializeResult\n"
+        "\n"
+        "app = Server('demo')\n"
+        "result: InitializeResult\n"
+    )
+    assert "R009" in _findings_by_rule(tmp_path)
+
+
+def test_distinctive_handshake_names_need_no_mcp_surface(tmp_path):
+    """`InitializeRequest` and `InitializedNotification` are MCP's alone --
+    neither appears in an LSP type module -- so they stay unanchored.
+    Gating them would only add a way to miss a real finding."""
+    (tmp_path / "h.py").write_text("x = InitializedNotification\ny = InitializeRequest\n")
+    assert "R009" in _findings_by_rule(tmp_path)
+
+
+def test_lsp_create_message_does_not_fire_r018(tmp_path):
+    """A bare `create_message` is what anyone calls the function that builds a
+    wire message. This one frames an LSP payload with Content-Length headers
+    and has nothing to do with MCP Sampling."""
+    (tmp_path / "server.py").write_text(
+        "import json\n"
+        "\n"
+        "def create_message(payload) -> tuple[bytes, bytes]:\n"
+        "    body = json.dumps(payload).encode()\n"
+        "    return (f'Content-Length: {len(body)}\\r\\n\\r\\n'.encode(), body)\n"
+        "\n"
+        "def send(payload):\n"
+        "    return b''.join(create_message(payload))\n"
+    )
+    assert "R018" not in _findings_by_rule(tmp_path)
+
+
+def test_session_create_message_still_fires_r018(tmp_path):
+    """Real MCP sampling goes through the session object, which is the anchor
+    r007 already uses for this identifier."""
+    (tmp_path / "srv.py").write_text(
+        "from mcp.server import Server\n"
+        "\n"
+        "async def handler(ctx):\n"
+        "    return await ctx.session.create_message(messages=[])\n"
+    )
+    assert "R018" in _findings_by_rule(tmp_path)
+
+
+def test_sdk_roots_import_still_fires_r018(tmp_path):
+    """The shape a real server has: SDK type names imported from mcp.types.
+    This is the true positive that must survive the fix."""
+    (tmp_path / "srv.py").write_text(
+        "from mcp.server import Server\n"
+        "from mcp.types import ListRootsResult, RootsCapability\n"
+        "\n"
+        "app = Server('demo')\n"
+    )
+    assert "R018" in _findings_by_rule(tmp_path)

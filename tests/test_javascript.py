@@ -11,13 +11,12 @@ tokenize as Python, `_content_spans` would return `None`, and every rule
 would silently fall back to *unfiltered* matching -- exactly the
 comment-and-docstring false positive `search_code` exists to prevent.
 
-Step 2 of #149 is porting the rules themselves. R006, R017, and R021 are
-the first three -- each has patterns that are spelled identically in
-JavaScript and TypeScript (a class name, a wire string, a URL/date
-literal), so `"javascript"` reaching the same branch as `"typescript"` was
-the entire port. The other eighteen rules key off `TS_*` patterns built
-around `import`/type-annotation idioms JavaScript doesn't have, and stay
-TypeScript-only until each is checked and ported individually.
+Step 2 of #149 is porting the rules themselves. R001, R006, R017, and R021
+are the first four. R006/R017/R021 use patterns spelled identically in
+JavaScript and TypeScript; R001 keeps the TypeScript matcher untouched and
+uses a conservative JavaScript header matcher so the port does not broaden
+existing TypeScript behavior. The other seventeen rules stay TypeScript-only
+until each is checked and ported individually.
 """
 from __future__ import annotations
 
@@ -27,6 +26,7 @@ import pytest
 
 from mcp_migrate.rules.base import Project, SourceFile
 from mcp_migrate.rules.r006_sse_transport_deprecated import DeprecatedSSETransport
+from mcp_migrate.rules.r012_logging_set_level_removed import LoggingSetLevelRemoved
 from mcp_migrate.rules.r017_resource_not_found_code_changed import (
     ResourceNotFoundCodeChanged,
 )
@@ -107,6 +107,33 @@ def test_r006_stays_silent_on_migrated_javascript_server():
     assert DeprecatedSSETransport().check(project) == []
 
 
+def test_r012_finds_removed_set_level_request_in_javascript():
+    project = _js_project('const req = new SetLevelRequest({ level: "debug" });\n')
+    findings = LoggingSetLevelRemoved().check(project)
+    assert len(findings) == 1
+    assert findings[0].line == 1
+
+
+def test_r012_finds_removed_set_level_wire_method_in_javascript():
+    project = _js_project('server.setRequestHandler("logging/setLevel", handler);\n')
+    findings = LoggingSetLevelRemoved().check(project)
+    assert len(findings) == 1
+    assert findings[0].line == 1
+
+
+def test_r012_deduplicates_code_and_wire_match_on_same_line():
+    project = _js_project('const req = new SetLevelRequest("logging/setLevel");\n')
+    assert len(LoggingSetLevelRemoved().check(project)) == 1
+
+
+def test_r012_ignores_comments_and_longer_wire_names_in_javascript():
+    project = _js_project(
+        '// SetLevelRequest used to handle logging/setLevel\n'
+        'const method = "logging/setLevelExtra";\n'
+    )
+    assert LoggingSetLevelRemoved().check(project) == []
+
+
 def test_r017_finds_the_old_resource_not_found_code_in_javascript():
     code = (
         'function notFound() {\n'
@@ -141,7 +168,7 @@ def test_r021_stays_silent_without_an_explicit_dialect_pin():
 # `TEST_FILE_PATTERNS` already excluded `*.test.ts`/`*.spec.ts`/
 # `*.examples.ts` beside the module they cover, but had no JavaScript
 # spellings. That went unnoticed while no rule read JavaScript at all --
-# now that R006/R017/R021 do, a colocated `server.test.js` fixture (e.g.
+# now that R001/R006/R017/R021 do, a colocated `server.test.js` fixture (e.g.
 # a backward-compat test deliberately exercising the old -32002 code) is
 # scanned as production code and reported as a real `breaking` finding,
 # exactly what this exclusion list exists to prevent (see scan.py).
