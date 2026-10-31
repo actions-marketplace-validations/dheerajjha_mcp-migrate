@@ -1,6 +1,6 @@
 import re
 
-from .base import Finding, Project, Rule
+from .base import Finding, Fires, Project, Rule, Silent, server_call_keywords
 
 # Only the five *list-shaped* results are cacheable per SEP-2549 --
 # call_tool/get_prompt are not in that list, so a file that only
@@ -9,6 +9,23 @@ from .base import Finding, Project, Rule
 CACHEABLE_HANDLER_RX = re.compile(
     r"@[\w.]*\.(?:list_tools|list_prompts|list_resources|read_resource|"
     r"list_resource_templates)\s*\("
+)
+LOWLEVEL_CACHEABLE_CONSTRUCTOR_RX = re.compile(
+    r"\b(?:Server|MCPServer)\s*\([^)]*\bon_"
+    r"(?:list_tools|list_resources|read_resource|"
+    r"list_resource_templates|list_prompts)\s*="
+)
+# The same names as keywords, for server_call_keywords; the regex above is
+# the fallback for a file that will not parse (see r010).
+LOWLEVEL_CACHEABLE_CONSTRUCTOR_HANDLERS = (
+    "on_list_tools", "on_list_resources", "on_read_resource",
+    "on_list_resource_templates", "on_list_prompts",
+)
+MCPSERVER_CACHEABLE_DECORATOR_RX = re.compile(
+    r"\b\w*MCPServer\s*\("
+)
+HIGHLEVEL_CACHEABLE_DECORATOR_RX = re.compile(
+    r"@[\w.]*\.(?:tool|resource|prompt)\s*\("
 )
 
 # Presence check: a mention anywhere in code or string literals in the file is
@@ -97,6 +114,123 @@ class CacheableResultMetadataMissing(Rule):
         "the SDK emits no cache metadata at all."
     )
     languages = ("python", "typescript")
+    boundaries = (
+        Fires(
+            snippet='server = Server(\n    "demo",\n    on_list_tools=list_tools,\n)\n',
+            reason="A black-formatted mcp 2.x constructor still registers a list handler.",
+        ),
+        Fires(
+            snippet=(
+                'mcp = MCPServer("demo")\n\n'
+                "@mcp.tool()\n"
+                "def add(a: int, b: int) -> int:\n"
+                "    return a + b\n"
+            ),
+            reason="A tool registered on MCPServer means the server answers tools/list.",
+        ),
+        Fires(
+            snippet=(
+                "@server.list_tools()\n"
+                "async def list_tools():\n"
+                "    return []\n"
+            ),
+            reason=(
+                "A Python list handler without cache hints emits no ttlMs or "
+                "cacheScope metadata."
+            ),
+        ),
+        Silent(
+            snippet="@agent.tool()\ndef search(query: str) -> str:\n    return query\n",
+            reason="A .tool() decorator with no MCPServer in the project belongs to another framework.",
+        ),
+        Silent(
+            snippet=(
+                "@server.list_tools()\n"
+                "async def list_tools():\n"
+                '    return {"tools": [], "ttlMs": 60000, "cacheScope": "public"}\n'
+            ),
+            reason="A handler that writes ttlMs and cacheScope itself already has the metadata.",
+        ),
+        Fires(
+            snippet=(
+                "@server.list_tools()\n"
+                "async def list_tools():\n"
+                "    # ttlMs is added by our proxy\n"
+                "    return []\n"
+            ),
+            reason="A comment that mentions ttlMs puts nothing on the wire.",
+        ),
+        Silent(
+            snippet=(
+                "server = Server(\n"
+                "    cache_hints={'tools/list': CacheHint(ttl_ms=5000)},\n"
+                ")\n"
+                "@server.list_tools()\n"
+                "async def list_tools():\n"
+                "    return []\n"
+            ),
+            reason=(
+                "Python cache hints are configured once on the server, not "
+                "inside each handler."
+            ),
+        ),
+        Silent(
+            snippet=(
+                "@server.call_tool()\n"
+                "async def call_tool(name, arguments):\n"
+                "    return []\n"
+            ),
+            reason="Tool-call results are not one of SEP-2549's cacheable list/read results.",
+        ),
+        Fires(
+            snippet='server.setRequestHandler("tools/list", async () => ({ tools: [] }));\n',
+            reason="A handler registered by wire method name is still a list handler.",
+            language="typescript",
+        ),
+        Fires(
+            snippet=(
+                "server.setRequestHandler(ListToolsRequestSchema, async () => {\n"
+                "  return { tools: [] };\n"
+                "});\n"
+            ),
+            reason=(
+                "A TypeScript list handler without cache hints emits no ttlMs "
+                "or cacheScope metadata."
+            ),
+            language="typescript",
+        ),
+        Silent(
+            snippet=(
+                "server.registerResource('config', 'config://app', "
+                "{ cacheHint: hints.config }, readConfig);\n"
+                "server.setRequestHandler(ListResourcesRequestSchema, listResources);\n"
+            ),
+            reason=(
+                "A per-resource cacheHint configures the metadata as surely as "
+                "server-wide cacheHints."
+            ),
+            language="typescript",
+        ),
+        Silent(
+            snippet=(
+                "const server = new McpServer(\n"
+                "  { name: 'demo', version: '1.0.0' },\n"
+                "  { cacheHints: { 'tools/list': { ttlMs: 5000 } } },\n"
+                ");\n"
+                "server.setRequestHandler(ListToolsRequestSchema, handler);\n"
+            ),
+            reason=(
+                "TypeScript cache hints are configured once on the server, "
+                "not inside each handler."
+            ),
+            language="typescript",
+        ),
+        Silent(
+            snippet="server.setRequestHandler(CallToolRequestSchema, handler);\n",
+            reason="Tool-call results are not one of SEP-2549's cacheable list/read results.",
+            language="typescript",
+        ),
+    )
 
     def check(self, project: Project) -> list[Finding]:
         if project.language == "typescript":
@@ -120,6 +254,23 @@ class CacheableResultMetadataMissing(Rule):
                 continue
             seen_files.add(f.path)
             out.append(self.finding(MESSAGE, f, line, text))
+        for f, line, text in server_call_keywords(
+            project, LOWLEVEL_CACHEABLE_CONSTRUCTOR_HANDLERS, LOWLEVEL_CACHEABLE_CONSTRUCTOR_RX.pattern
+        ):
+            if f.path in seen_files:
+                continue
+            if f.path in files_with_mention:
+                continue
+            seen_files.add(f.path)
+            out.append(self.finding(MESSAGE, f, line, text))
+        if any(project.search_code(MCPSERVER_CACHEABLE_DECORATOR_RX.pattern)):
+            for f, line, text in project.search_code(HIGHLEVEL_CACHEABLE_DECORATOR_RX.pattern):
+                if f.path in seen_files:
+                    continue
+                if f.path in files_with_mention:
+                    continue
+                seen_files.add(f.path)
+                out.append(self.finding(MESSAGE, f, line, text))
         return out
 
     def _check_ts(self, project: Project) -> list[Finding]:

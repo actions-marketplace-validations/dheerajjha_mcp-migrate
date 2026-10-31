@@ -78,7 +78,7 @@ def split_ref(ref: str) -> tuple[str, str]:
 def load_entries() -> list[dict]:
     entries = []
     for path in sorted(SERVERS.glob("*.yaml")):
-        data = yaml.safe_load(path.read_text())
+        data = yaml.safe_load(path.read_text(encoding="utf-8"))
         if isinstance(data, dict):
             entries.append(data)
     entries.sort(
@@ -137,7 +137,7 @@ def main() -> int:
     # renders from. Hard-coding it here would be two pages claiming
     # different numbers about the same scan, which is the failure this
     # project keeps having to fix.
-    scan = json.loads(SCAN.read_text()) if SCAN.exists() else None
+    scan = json.loads(SCAN.read_text(encoding="utf-8")) if SCAN.exists() else None
     if scan:
         r001 = scan["rule_prevalence"].get("R001", {"pct": 0.0})["pct"]
         findings_line = (
@@ -346,7 +346,7 @@ Context Protocol project. Generated from the registry and the rule set at v{__ve
 """
 
     OUT.parent.mkdir(parents=True, exist_ok=True)
-    OUT.write_text(doc)
+    OUT.write_text(doc, encoding="utf-8")
     print(f"rendered {OUT.relative_to(ROOT)}: {len(entries)} servers, {len(rules)} rules, v{__version__}")
     return 0
 

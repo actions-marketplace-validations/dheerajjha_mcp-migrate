@@ -42,8 +42,8 @@ def pct(part: int, whole: int) -> str:
 
 
 def main() -> int:
-    d = json.loads(DATA.read_text())
-    prior = json.loads(PRIOR.read_text()) if PRIOR.exists() else None
+    d = json.loads(DATA.read_text(encoding="utf-8"))
+    prior = json.loads(PRIOR.read_text(encoding="utf-8")) if PRIOR.exists() else None
 
     reg = d["registry"]
     n = d["python_servers_scanned"]
@@ -394,7 +394,7 @@ and the page is a bug.</p>
 </html>
 """
     OUT.parent.mkdir(parents=True, exist_ok=True)
-    OUT.write_text(doc)
+    OUT.write_text(doc, encoding="utf-8")
     print(f"rendered {OUT.relative_to(ROOT)}: n={n}, R001={r001_pct}, R010={r010_pct}")
     return 0
 

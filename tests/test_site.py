@@ -14,6 +14,7 @@ run `python scripts/render_site.py` and commit the result.
 from __future__ import annotations
 
 import html
+import json
 import re
 import sys
 from pathlib import Path
@@ -32,16 +33,16 @@ from mcp_migrate.rules import all_rules  # noqa: E402
 @pytest.fixture(scope="module")
 def page() -> str:
     assert OUT.exists(), "docs/index.html is missing; run scripts/render_site.py"
-    return OUT.read_text()
+    return OUT.read_text(encoding="utf-8")
 
 
 def test_committed_page_is_what_the_generator_produces(page):
     """The whole point: no hand-edits, no drift."""
     before = page
     main()
-    after = OUT.read_text()
+    after = OUT.read_text(encoding="utf-8")
     if before != after:
-        OUT.write_text(before)  # leave the tree as we found it on failure
+        OUT.write_text(before, encoding="utf-8")  # leave the tree as we found it on failure
         pytest.fail(
             "docs/index.html is stale. Run `python scripts/render_site.py` and commit."
         )
@@ -56,6 +57,90 @@ def test_pages_is_served_from_this_file():
     """
     assert OUT.name == "index.html"
     assert OUT.parent.name == "docs"
+
+
+def test_generator_writes_utf8_with_a_legacy_default_encoding(tmp_path, monkeypatch):
+    """The HTML declares UTF-8 even when the host defaults to cp1252."""
+    write_text = Path.write_text
+
+    def legacy_write_text(path, data, encoding=None, **kwargs):
+        return write_text(path, data, encoding=encoding or "cp1252", **kwargs)
+
+    output = tmp_path / "index.html"
+    monkeypatch.setattr("render_site.ROOT", tmp_path)
+    monkeypatch.setattr("render_site.OUT", output)
+    monkeypatch.setattr(Path, "write_text", legacy_write_text)
+
+    assert main() == 0
+    rendered = output.read_bytes().decode("utf-8")
+    assert "\u00d7" in rendered
+
+
+@pytest.fixture
+def legacy_default_reads(monkeypatch):
+    """Reproduce a cp1252 host even when the test runner defaults to UTF-8."""
+    read_text = Path.read_text
+
+    def legacy_read_text(path, encoding=None, **kwargs):
+        return read_text(path, encoding=encoding or "cp1252", **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", legacy_read_text)
+
+
+def test_generator_preserves_utf8_registry_text(tmp_path, monkeypatch, legacy_default_reads):
+    import render_site
+
+    servers = tmp_path / "registry" / "servers"
+    servers.mkdir(parents=True)
+    name = "Ren\u00e9"
+    notes = "caf\u00e9 & biblioth\u00e8que"
+    (servers / "example.yaml").write_bytes(
+        (
+            f"name: {name}\nrepo: example/server\nlanguage: Python\n"
+            f"grade: A\nscore: 100\nnotes: {notes}\n"
+        ).encode("utf-8")
+    )
+    output = tmp_path / "docs" / "index.html"
+    monkeypatch.setattr(render_site, "ROOT", tmp_path)
+    monkeypatch.setattr(render_site, "SERVERS", servers)
+    monkeypatch.setattr(render_site, "SCAN", tmp_path / "missing-scan.json")
+    monkeypatch.setattr(render_site, "OUT", output)
+
+    (entry,) = load_entries()
+    assert entry["name"] == name
+    assert entry["notes"] == notes
+    assert main() == 0
+    rendered = output.read_bytes().decode("utf-8")
+    assert f">{name}</a>" in rendered
+    assert html.escape(notes) in rendered
+
+
+def test_generator_accepts_utf8_scan_metadata(tmp_path, monkeypatch, legacy_default_reads):
+    import render_site
+
+    scan = tmp_path / "ecosystem-scan.json"
+    # This valid Unicode name has a UTF-8 byte that cp1252 cannot decode.
+    # Even undisplayed metadata must not prevent the scan from loading.
+    scan.write_bytes(
+        json.dumps(
+            {
+                "python_servers_scanned": 17,
+                "rule_prevalence": {"R001": {"pct": 12.5}},
+                "maintainer": "\u00ddr",
+            },
+            ensure_ascii=False,
+        ).encode("utf-8")
+    )
+    output = tmp_path / "docs" / "index.html"
+    monkeypatch.setattr(render_site, "ROOT", tmp_path)
+    monkeypatch.setattr(render_site, "SERVERS", tmp_path / "missing-servers")
+    monkeypatch.setattr(render_site, "SCAN", scan)
+    monkeypatch.setattr(render_site, "OUT", output)
+
+    assert main() == 0
+    rendered = output.read_bytes().decode("utf-8")
+    assert "We scanned 17 Python servers" in rendered
+    assert "appears in 12.5% of them" in rendered
 
 
 def test_every_rule_appears_with_its_id_and_title(page):
@@ -142,14 +227,12 @@ def test_split_ref(ref, expected):
 def test_the_landing_page_links_the_ecosystem_report(page):
     """The report is the reason a stranger has anything to share. A page
     nothing links to is a page nobody reads."""
-    import json
-
     from render_site import SCAN
 
     assert 'href="findings.html"' in page
 
     if SCAN.exists():
-        scan = json.loads(SCAN.read_text())
+        scan = json.loads(SCAN.read_text(encoding="utf-8"))
         # The headline number has to be the one the report renders from,
         # or the two pages disagree about the same scan.
         assert f'{scan["python_servers_scanned"]} Python servers' in page

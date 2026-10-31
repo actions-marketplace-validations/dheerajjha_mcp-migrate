@@ -29,20 +29,20 @@ from mcp_migrate.rules import all_rules  # noqa: E402
 @pytest.fixture(scope="module")
 def page() -> str:
     assert OUT.exists(), "docs/findings.html is missing; run scripts/render_findings.py"
-    return OUT.read_text()
+    return OUT.read_text(encoding="utf-8")
 
 
 @pytest.fixture(scope="module")
 def data() -> dict:
-    return json.loads(DATA.read_text())
+    return json.loads(DATA.read_text(encoding="utf-8"))
 
 
 def test_committed_page_is_what_the_generator_produces(page):
     before = page
     main()
-    after = OUT.read_text()
+    after = OUT.read_text(encoding="utf-8")
     if before != after:
-        OUT.write_text(before)
+        OUT.write_text(before, encoding="utf-8")
         pytest.fail(
             "docs/findings.html is stale. Run `python scripts/render_findings.py` "
             "and commit."
@@ -92,7 +92,7 @@ def test_the_correction_section_survives(page):
 
 def test_the_prior_claim_is_read_from_the_frozen_run_not_typed(page):
     """The number that was wrong is exactly the one nobody should retype."""
-    prior = json.loads(PRIOR.read_text())
+    prior = json.loads(PRIOR.read_text(encoding="utf-8"))
     was = prior["rule_prevalence"]["R010"]["pct"]
 
     assert f"<em>{was}% of servers do not implement" in page
@@ -122,3 +122,71 @@ def test_no_placeholder_values_leaked(page):
     body = page.split("</style>", 1)[1]
     assert ">None<" not in body
     assert "n/a" not in body
+
+
+@pytest.fixture
+def legacy_default_reads(monkeypatch):
+    """Reproduce a cp1252 host even when the test runner defaults to UTF-8."""
+    read_text = Path.read_text
+
+    def legacy_read_text(path, encoding=None, **kwargs):
+        return read_text(path, encoding=encoding or "cp1252", **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", legacy_read_text)
+
+
+def test_generator_writes_utf8_with_a_legacy_default_encoding(tmp_path, monkeypatch):
+    """The HTML declares UTF-8 even when the host defaults to cp1252."""
+    import render_findings
+
+    payload = json.loads(DATA.read_bytes())
+    languages = payload["languages_of_live_sample"]
+    first_language = next(iter(languages))
+    payload["languages_of_live_sample"] = {
+        "Pythön": languages[first_language],
+        **{key: value for key, value in languages.items() if key != first_language},
+    }
+    scan = tmp_path / "ecosystem-scan.json"
+    scan.write_bytes(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
+
+    output = tmp_path / "findings.html"
+    monkeypatch.setattr(render_findings, "DATA", scan)
+    monkeypatch.setattr(render_findings, "PRIOR", tmp_path / "missing-prior.json")
+    monkeypatch.setattr(render_findings, "OUT", output)
+    monkeypatch.setattr(render_findings, "ROOT", tmp_path)
+
+    write_text = Path.write_text
+
+    def legacy_write_text(path, data, encoding=None, **kwargs):
+        return write_text(path, data, encoding=encoding or "cp1252", **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", legacy_write_text)
+
+    assert main() == 0
+    rendered = output.read_bytes().decode("utf-8")
+    assert "Pythön" in rendered
+
+
+def test_generator_preserves_utf8_scan_text(tmp_path, monkeypatch, legacy_default_reads):
+    """UTF-8 scan data must load when the host defaults to cp1252."""
+    import render_findings
+
+    payload = json.loads(DATA.read_bytes())
+    languages = payload["languages_of_live_sample"]
+    first_language = next(iter(languages))
+    payload["languages_of_live_sample"] = {
+        "Ýr": languages[first_language],
+        **{key: value for key, value in languages.items() if key != first_language},
+    }
+    scan = tmp_path / "ecosystem-scan.json"
+    scan.write_bytes(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
+
+    output = tmp_path / "findings.html"
+    monkeypatch.setattr(render_findings, "DATA", scan)
+    monkeypatch.setattr(render_findings, "PRIOR", tmp_path / "missing-prior.json")
+    monkeypatch.setattr(render_findings, "OUT", output)
+    monkeypatch.setattr(render_findings, "ROOT", tmp_path)
+
+    assert main() == 0
+    rendered = output.read_bytes().decode("utf-8")
+    assert "Ýr" in rendered

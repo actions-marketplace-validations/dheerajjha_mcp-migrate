@@ -4,6 +4,385 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
+## [0.21.1] - 2026-10-30
+
+### Fixed
+
+- **R018 detects quoted `elicitationId` payload keys** in Python and TypeScript
+  ([#351](https://github.com/dheerajjha/mcp-migrate/issues/351),
+  [#364](https://github.com/dheerajjha/mcp-migrate/pull/364), from @CosmonautJones). Identifier and
+  quoted-key matches on the same line produce one finding; prose and longer
+  keys stay silent, including concatenated prose and key fragments.
+- **R001 keeps TypeScript CORS exposure lists silent regardless of order**
+  ([#352](https://github.com/dheerajjha/mcp-migrate/issues/352),
+  [#365](https://github.com/dheerajjha/mcp-migrate/pull/365), from @CosmonautJones). The subscript
+  alternative now requires a receiver before the opening bracket, while actual
+  header reads and writes still fire, including reads inside template
+  interpolations while literal template text stays silent.
+- Read the UTF-8 registry and scan inputs and generate the landing page independently
+  of the host's default encoding. Escape the absolute baseline path in its TOML
+  test fixture on Windows ([#363](https://github.com/dheerajjha/mcp-migrate/pull/363), from @CosmonautJones).
+- `scripts/render_findings.py` reads the scan data and writes `docs/findings.html` as
+  UTF-8 as well ([#366](https://github.com/dheerajjha/mcp-migrate/issues/366), [#367](https://github.com/dheerajjha/mcp-migrate/pull/367), from @Aaqibhafeezkhan).
+
+## [0.21.0] - 2026-10-21
+
+### Fixed
+
+- **R002 counts `dict()`, `defaultdict()` and `OrderedDict()` stores.**
+  ([#359](https://github.com/dheerajjha/mcp-migrate/issues/359),
+  [#360](https://github.com/dheerajjha/mcp-migrate/pull/360), from
+  @HarshRajSinghania)
+  R002 read only dict literals and comprehensions. A module-level
+  `sessions = defaultdict(dict)` graded A, while `sessions = {}` was a
+  `breaking` finding. Calls to `dict`, `defaultdict` and `OrderedDict` now
+  count, bare or as `collections.<name>`, in plain and annotated assignments.
+  One built inside a function is still request-local and stays silent.
+- **R002 in TypeScript no longer matches a constructor by its prefix.**
+  ([#358](https://github.com/dheerajjha/mcp-migrate/issues/358),
+  [#361](https://github.com/dheerajjha/mcp-migrate/pull/361), from
+  @motodriver)
+  `new Settings()`, `new MapboxClient(token)` and `new ObjectStore()` each
+  read as a per-connection `Set`, `Map` or `Object`, a `breaking` finding.
+  Meanwhile `new WeakMap()` and `new WeakSet()`, the classic per-connection
+  stores, were missed. The constructor name is now bounded, `$` included, and
+  the weak collections count.
+
+R001, R018, R020 and R021 now declare their detection boundaries (#348, #350,
+#349, #342, from @motodriver). That makes eleven of the 21 rules.
+
+No published board grade moves: `scripts/regrade_board.py` reproduces all 20
+entries on this release.
+
+## [0.20.0] - 2026-10-19
+
+### Fixed
+
+- **`fix` no longer edits files `check` reports nothing in.**
+  ([#336](https://github.com/dheerajjha/mcp-migrate/issues/336),
+  [#347](https://github.com/dheerajjha/mcp-migrate/pull/347), from
+  @sstej44)
+  - Each fixer now runs only on files where its rule has a finding. Before,
+    every fixer saw every file, so a rule's precision gates (MCP context,
+    exclusions) never reached its fixer. On invisible-playwright-mcp,
+    `check` was silent but `fix --rule R014` commented out the
+    `Last-Event-ID` read in a browser `/chat/events` route. The line after it
+    still used that variable, so `--write` broke the route.
+  - A suppressed finding doesn't count, so `ignore[R0NN]` keeps the fixer
+    off a file that has no other finding for that rule. The check is per
+    file, not per line: if the same file also has an unsuppressed finding
+    for that rule, the fixer still runs on the whole file.
+  - The check uses findings from before `overlap.dedupe()`. That way R007's
+    fixer still runs where its findings are folded into R018's in the report.
+  - A project-level finding (R008) lets its fixer run on every file in the
+    language it was found in.
+  - The same cause had fixers editing strings, docstrings and comments that
+    `check` skips (R005, R006, R007, R011, R020 and others). The R008 fixer
+    also annotated span starts in projects that already read `traceparent`.
+    No `tests/fixtures/` project's `fix` output changes.
+- **R021 no longer reads a September 2019 date as the 2019-09 dialect.**
+  ([#343](https://github.com/dheerajjha/mcp-migrate/issues/343),
+  [#344](https://github.com/dheerajjha/mcp-migrate/pull/344), from @KeuqS)
+  `\b2019-09\b` also matched the start of a full date, so a quoted
+  `"2019-09-01"` was an advisory finding: a FastMCP tool with that default
+  went from A (100) to A (97). The 2019-09 schema URL and a bare `"2019-09"`
+  still fire, in Python, TypeScript and JavaScript.
+
+R014, R015 and R016 now declare their detection boundaries (#333, #340,
+#341), and the boundary runner parses Python the way a real scan does (#340),
+so a rule that reads imports or walks the AST sees a snippet as `check`
+would.
+
+No published board grade moves: `scripts/regrade_board.py` reproduces all 20
+entries on this release.
+
+## [0.19.0] - 2026-10-12
+
+### Fixed
+
+- **R014's TypeScript half no longer flags a browser EventSource route
+  because an MCP server lives elsewhere in the project.**
+  ([#338](https://github.com/dheerajjha/mcp-migrate/pull/338), from
+  @KingEmma7)
+  - A quoted `last-event-id` header read now needs MCP surface in its own file,
+    as the Python half has since 0.18.0.
+  - A `/chat/events` route in `routes.ts` next to an MCP `server.ts` is no
+    longer a breaking finding.
+  - Identifier matches such as `lastEventId` are unchanged.
+- **MCP's own HTTP headers count as MCP surface.**
+  ([#338](https://github.com/dheerajjha/mcp-migrate/pull/338))
+  - `Mcp-Session-Id`, `MCP-Protocol-Version`, `Mcp-Method` and `Mcp-Name` now
+    mark a file as MCP code.
+  - So a hand-rolled transport that reads one of them before `Last-Event-ID`
+    keeps its R014 finding in both languages, with no SDK import in the file.
+  - R005, R006, R009 and R020 use the same gate. A file that mentions one of
+    these headers and nothing else MCP can now keep findings it used to lose,
+    so its grade can fall.
+
+No published board grade moves: `scripts/regrade_board.py` reproduces all 20
+entries on this release.
+
+## [0.18.0] - 2026-10-11
+
+### Fixed
+
+- **R014 finds a Python `Last-Event-ID` header read, whatever the variable is
+  called.** ([#334](https://github.com/dheerajjha/mcp-migrate/issues/334),
+  [#335](https://github.com/dheerajjha/mcp-migrate/pull/335), from
+  @KingEmma7)
+  - Before, the Python half only matched identifiers. So
+    `cursor = request.headers.get("Last-Event-ID")` graded A, while `fix`
+    commented out the same line.
+  - It now also reads the quoted header, as the TypeScript half already did.
+  - The header on its own needs MCP surface in the same file, because ordinary
+    browser EventSource streams send it too. Without that gate,
+    invisible-playwright-mcp's `/chat/events` route would have taken its board
+    grade from A/97 to C/72.
+  - Expect lower grades for MCP servers that read the header under another
+    name.
+
+R013 now declares its detection boundaries in all three languages (#332).
+
+No published board grade moves: `scripts/regrade_board.py` reproduces all 20
+entries on this release.
+
+## [0.17.0] - 2026-10-08
+
+### Added
+
+- **R013 reads JavaScript**, taking JavaScript rule coverage to 7/21.
+  ([#287](https://github.com/dheerajjha/mcp-migrate/issues/287),
+  [#294](https://github.com/dheerajjha/mcp-migrate/pull/294), from
+  @motodriver) It uses the TypeScript matchers, so a `require()` of
+  `SubscribeRequestSchema` counts the same way a TypeScript `import` does.
+
+### Fixed
+
+- **R013's wire match is bounded at the end.** `resources/subscriber` and other
+  longer names no longer read as the removed `resources/subscribe`, in Python or
+  in TypeScript.
+
+R012 now declares its detection boundaries in all three languages (#330).
+
+No published board grade moves: `scripts/regrade_board.py` reproduces all 20
+entries on this release.
+
+## [0.16.0] - 2026-10-07
+
+### Fixed
+
+- **R017 no longer fires on `-32002` mentioned in a comment.**
+  ([#252](https://github.com/dheerajjha/mcp-migrate/issues/252),
+  [#328](https://github.com/dheerajjha/mcp-migrate/pull/328), from
+  @motodriver) Its pattern matched from column 0, so a comment was only
+  excluded when it started there. An indented comment, or a code line whose
+  only `-32002` sat in a trailing comment, was a breaking finding. The rule now
+  matches the code itself and then looks for resource or not-found context on
+  the line. Real uses still fire, including `RESOURCE_NOT_FOUND = -32002  #
+  legacy code`. Expect grades to rise for code that only mentioned the old
+  code in a comment.
+
+### Added
+
+- **`scripts/regrade_board.py`**
+  ([#327](https://github.com/dheerajjha/mcp-migrate/pull/327), from
+  @motodriver) re-checks every board entry at its pinned commit and prints
+  the YAML to fix when a published grade no longer reproduces. It isn't part
+  of the package; it's how a rules change proves it didn't move the board.
+
+No published board grade moves: `scripts/regrade_board.py` reproduces all 20
+entries on this release.
+
+## [0.15.1] - 2026-10-05
+
+### Fixed
+
+- **The R009, R011, R012 and R013 fixers no longer write broken TypeScript.**
+  ([#323](https://github.com/dheerajjha/mcp-migrate/issues/323),
+  [#325](https://github.com/dheerajjha/mcp-migrate/pull/325), from
+  @kocaemre) Like R001's before 0.15.0, they commented out a flagged line even
+  when it also closed a bracket opened on an earlier line, and in TypeScript and
+  JavaScript that broken file was written. They now keep such a line, with the
+  TODO above it. The same shape in Python used to be refused by the parse guard,
+  and now it is fixed.
+
+`check` is untouched, so no grade moves.
+
+## [0.15.0] - 2026-10-04
+
+### Fixed
+
+- **R006 stops reading every `/sse` string as the deprecated transport.**
+  ([#89](https://github.com/dheerajjha/mcp-migrate/issues/89),
+  [#321](https://github.com/dheerajjha/mcp-migrate/pull/321), from
+  @DevyanshMalhotra) In TypeScript and JavaScript, any string literal starting
+  with `/sse` was a finding. That includes `"/sse/icons/status.svg"`, and also
+  an ordinary Express SSE endpoint in an app with no MCP at all. The bare
+  string no longer counts, and an `/sse` route counts only in a file that
+  speaks MCP. `SSEServerTransport` and `transport: "sse"` still fire on their
+  own. Expect grades to rise for code that only *mentioned* `/sse`.
+- **R001's fixer no longer writes broken TypeScript.**
+  ([#305](https://github.com/dheerajjha/mcp-migrate/issues/305),
+  [#322](https://github.com/dheerajjha/mcp-migrate/pull/322), from
+  @motodriver) When the flagged header read sat on a line that also opened or
+  closed a bracket, the fixer commented the bracket out with it. Python had a
+  parse guard that refused the file, but TypeScript and JavaScript had nothing,
+  so the broken file was written. The line is now kept, with the TODO above it,
+  in all three languages. The same gap in four other fixers is #323.
+
+No published board grade moves: all 20 entries re-grade identically at their
+pinned commits.
+
+## [0.14.0] - 2026-10-04
+
+### Added
+
+- **A baseline file, so an existing project can adopt `check` in CI
+  incrementally.** ([#181](https://github.com/dheerajjha/mcp-migrate/issues/181),
+  [#318](https://github.com/dheerajjha/mcp-migrate/pull/318), from @sstej44)
+  `mcp-migrate check . --write-baseline .mcp-migrate-baseline.json` records
+  every current finding; `check . --baseline .mcp-migrate-baseline.json`
+  then lets only *new* findings fail the build via `--fail-on`. A baselined
+  finding still counts toward the grade exactly as before -- a baseline
+  changes what can block a merge, never what the letter means, so bulk-
+  baselining does not also bulk-improve a score. Matching is keyed on the
+  rule and the finding's source line content rather than its line number,
+  so it survives an unrelated line being inserted above it. `--write-baseline`
+  fully regenerates the file each run, which doubles as the prune mechanism:
+  a fixed finding simply isn't written back. `--write-baseline` combined with
+  `--rule` is refused: a baseline recorded from a subset of rules would make
+  every other rule's findings look new the moment it's used without `--rule`.
+  New `baseline` key in `[tool.mcp-migrate]`/`.mcp-migrate.toml`; new
+  `baseline`/`baseline_write` keys in `--json` output, both omitted unless
+  requested so existing consumers see unchanged output.
+
+No published board grade moves: all 20 entries re-grade identically at their
+pinned commits.
+
+## [0.13.0] - 2026-10-03
+
+### Fixed
+
+- **R011 sees the removed ping handler registered through the SDK.**
+  ([#310](https://github.com/dheerajjha/mcp-migrate/issues/310),
+  [#317](https://github.com/dheerajjha/mcp-migrate/pull/317), from
+  @HarshRajSinghania) SDK 2.x accepts `on_ping=` as a `Server()` constructor
+  argument, which contains neither `PingRequest` nor a `"ping"` dispatch
+  string, so a server passing it graded as if it did not implement ping. It is
+  found now, however the call is wrapped. `on_ping=` passed to any other call,
+  or named in a docstring or comment, stays silent. This completes #310: R013
+  got the same treatment in 0.12.0. Expect the grade of a server that does this
+  to move.
+
+No published board grade moves: all 20 entries re-grade identically at their
+pinned commits.
+
+## [0.12.0] - 2026-10-03
+
+### Fixed
+
+- **R013 sees resource subscriptions registered through the SDK itself.**
+  ([#310](https://github.com/dheerajjha/mcp-migrate/issues/310),
+  [#313](https://github.com/dheerajjha/mcp-migrate/pull/313), from
+  @HarshRajSinghania) R013 only recognised the request class names and the
+  wire strings, and a server that uses the SDK's own registration has
+  neither: `@app.subscribe_resource()` in 1.x, or `on_subscribe_resource=`
+  passed to `Server()` in 2.x. Such a server graded A/100 while implementing a
+  method the spec removed. Both shapes are found now, however the 2.x call is
+  wrapped, and a docstring or comment that names them stays silent. Expect the
+  grade of a server that does this to move.
+
+No published board grade moves: all 20 entries re-grade identically at their
+pinned commits.
+
+## [0.11.1] - 2026-10-02
+
+### Fixed
+
+- **A Python SDK 2.x server formatted by black is recognised as one too.**
+  ([#314](https://github.com/dheerajjha/mcp-migrate/pull/314)) 0.11.0 taught
+  R010 and R016 that 2.x takes handlers as `Server(...)` constructor
+  arguments, but matched one line at a time. The way black writes that call,
+  `Server(` on a line of its own with `on_list_tools=` below it, still read as
+  a server with no handlers and graded clean. The arguments are now read from
+  the call itself, however it is wrapped, and comments and strings no longer
+  count as arguments.
+
+No published board grade moves: all 20 entries re-grade identically at their
+pinned commits.
+
+## [0.11.0] - 2026-09-28
+
+### Fixed
+
+- **A server written for the Python SDK 2.x is recognised as one.**
+  ([#255](https://github.com/dheerajjha/mcp-migrate/issues/255),
+  [#307](https://github.com/dheerajjha/mcp-migrate/pull/307), from
+  @motodriver) In `mcp` 2.x, `FastMCP` became `MCPServer`, and handlers
+  arrive as `Server(...)` constructor arguments rather than decorators, so
+  R010 and R016 saw nothing. A 2.x server graded A with no findings at all.
+  Both now read the 2.x shapes. R016 fires, because `cache_hints` defaults to
+  `None` in 2.x (checked against `mcp` 2.2.0). R010 stays silent, since the
+  SDK registers that method itself, and it now does so because it read the
+  2.x floor, not because it saw nothing. Expect a 2.x server's grade to move.
+- **R001's fixer handles a header read on a line that opens a bracket.**
+  ([#304](https://github.com/dheerajjha/mcp-migrate/issues/304),
+  [#308](https://github.com/dheerajjha/mcp-migrate/pull/308), from
+  @charle-z) This is the mirror image of 0.10.1's closing-bracket case. The
+  line is kept, with the TODO above it, instead of the whole file being
+  refused.
+
+No published board grade moves: all 20 entries re-grade identically at their
+pinned commits.
+
+## [0.10.1] - 2026-09-28
+
+### Fixed
+
+- **R001's fixer no longer gives up on two shapes it used to refuse.**
+  ([#245](https://github.com/dheerajjha/mcp-migrate/issues/245),
+  [#303](https://github.com/dheerajjha/mcp-migrate/pull/303), from @Li-AmG)
+  When the header read was a function's only statement, commenting it out
+  left an empty body. When it sat on a line that also closed a bracket, the
+  closing bracket went with it. Either way the guard refused the whole file,
+  so `fix --write` did nothing. Now the first shape keeps an indented `pass`
+  beside the TODO, and the second leaves the line in place with the TODO
+  above it. Both results parse, and a second run changes nothing.
+
+`check` is untouched, so no grade moves.
+
+## [0.10.0] - 2026-09-28
+
+### Added
+
+- **R019 reads JavaScript**, taking JavaScript rule coverage from 5/21 to
+  6/21. ([#293](https://github.com/dheerajjha/mcp-migrate/pull/293), from
+  @motodriver) `tasks/list` and the blocking `tasks/result` were removed from
+  the spec, and a JavaScript server still calling them heard nothing. `.js`
+  routes through the TypeScript path, so comment-only mentions stay silent
+  exactly as they do in `.ts`.
+
+### Fixed
+
+- **R017's safe fixer no longer rewrites `-32002` inside comments.**
+  ([#269](https://github.com/dheerajjha/mcp-migrate/issues/269),
+  [#295](https://github.com/dheerajjha/mcp-migrate/pull/295), from
+  @motodriver) Under `--safe-only` it edited a migration note in a file
+  `check` had graded A, turning a true sentence about the old code into a
+  false one. It now skips every comment-only line: at column 0, indented, or
+  inside a `/* … */` block.
+- **R005 no longer fires on a class of your own named `ServerCapabilities`.**
+  ([#89](https://github.com/dheerajjha/mcp-migrate/issues/89),
+  [#296](https://github.com/dheerajjha/mcp-migrate/pull/296), from
+  @DevyanshMalhotra) In Python, a local class shadows the name from its
+  definition onward, so SDK evidence above it still counts. In TypeScript,
+  the bare type name now needs MCP surface in the same file, as it already
+  did in Python. Before this, `export interface ServerCapabilities {…}` in a
+  file with no MCP anywhere was a finding.
+
+No published grade moves: all 20 board entries re-grade identically at their
+pinned commits under this release.
+
 ## [0.9.0] - 2026-09-18
 
 ### Added
